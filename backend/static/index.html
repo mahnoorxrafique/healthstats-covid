@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HealthStats – COVID-19 Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#f6f7f9; --card:#ffffff; --text:#1f2937; --muted:#6b7280; --border:#e5e7eb; --accent:#2563eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f172a; --card:#1e293b; --text:#e5e7eb; --muted:#94a3b8; --border:#334155; --accent:#60a5fa; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:20px 24px; border-bottom:1px solid var(--border); background:var(--card);
+           display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; }
+  header h1 { margin:0; font-size:1.25rem; }
+  header p { margin:2px 0 0; color:var(--muted); font-size:.85rem; }
+  select, input, textarea, button { font:inherit; color:var(--text); background:var(--card);
+           border:1px solid var(--border); border-radius:8px; padding:8px 10px; }
+  button { cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.secondary { background:var(--card); color:var(--text); border-color:var(--border); }
+  main { max-width:1200px; margin:0 auto; padding:20px; }
+  #error { background:#fee2e2; color:#991b1b; padding:10px 14px; border-radius:8px; margin-bottom:16px; white-space:pre-wrap; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr)); gap:12px; margin-bottom:16px; }
+  .kpi, .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; }
+  .kpi .label { color:var(--muted); font-size:.8rem; }
+  .kpi .value { font-size:1.6rem; font-weight:600; margin-top:4px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr)); gap:16px; margin-bottom:16px; }
+  .card h2 { margin:0; font-size:1rem; }
+  .card .note { margin:2px 0 12px; color:var(--muted); font-size:.78rem; }
+  .chart { position:relative; height:320px; }
+  table { width:100%; border-collapse:collapse; font-size:.9rem; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-weight:500; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+  .row input { flex:1 1 200px; }
+  .report { border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:8px; }
+  .report .meta { color:var(--muted); font-size:.8rem; }
+  .report p { margin:6px 0 8px; }
+  .report button { padding:4px 10px; font-size:.8rem; }
+  form { display:grid; gap:8px; }
+  #formMsg { font-size:.85rem; color:var(--muted); }
+  footer { text-align:center; color:var(--muted); font-size:.8rem; padding:16px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>HealthStats – COVID-19 Dashboard</h1>
+    <p>MongoDB Atlas · FastAPI · Chart.js · data from Our World in Data</p>
+  </div>
+  <label>Country: <select id="country"></select></label>
+</header>
+
+<main>
+  <div id="error" hidden></div>
+
+  <section class="kpis">
+    <div class="kpi"><div class="label">Total cases</div><div class="value" id="kCases">–</div></div>
+    <div class="kpi"><div class="label">Total deaths</div><div class="value" id="kDeaths">–</div></div>
+    <div class="kpi"><div class="label">Fatality rate</div><div class="value" id="kCfr">–</div></div>
+    <div class="kpi"><div class="label">Fully vaccinated</div><div class="value" id="kVax">–</div></div>
+    <div class="kpi"><div class="label">Population</div><div class="value" id="kPop">–</div></div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Monthly cases and deaths – <span class="cname"></span></h2>
+      <p class="note">Pipeline 2: $match → $group with $dateTrunc → $sort → $project</p>
+      <div class="chart"><canvas id="chMonthly"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>Daily cases with 7-day average – <span class="cname"></span></h2>
+      <p class="note">Pipeline 4: $match → $sort → $setWindowFields (moving average) → $project</p>
+      <div class="chart"><canvas id="chDaily"></canvas></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Top 10 countries – cases per million</h2>
+      <p class="note">Pipeline 1: $group → $lookup → $unwind → $match → $project → $sort → $limit</p>
+      <div class="chart"><canvas id="chTop"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>Case fatality rate by continent (%)</h2>
+      <p class="note">Pipeline 3: $group → $lookup → $unwind → $group → $project → $sort</p>
+      <div class="chart"><canvas id="chContinent"></canvas></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Vaccination coverage vs deaths per million</h2>
+      <p class="note">Pipeline 5: $group → $lookup (sub-pipeline into vaccinations) → $lookup → $project → $sort</p>
+      <div class="chart"><canvas id="chVax"></canvas></div>
+    </div>
+    <div class="card">
+      <h2>Worst day per country (per million people)</h2>
+      <p class="note">Pipeline 6: $group with $top → $lookup → $match → $project → $sort → $limit</p>
+      <table>
+        <thead><tr><th>Country</th><th>Peak date</th><th>New cases</th><th>Per million</th></tr></thead>
+        <tbody id="peakBody"><tr><td colspan="4">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Health reports – <span class="cname"></span></h2>
+    <p class="note">CRUD on the users_reports collection, with full-text search (text index)</p>
+    <div class="row">
+      <input id="searchQ" placeholder="Search all reports (e.g. vaccination)">
+      <button id="searchBtn">Search</button>
+      <button id="clearBtn" class="secondary">Show this country</button>
+    </div>
+    <div id="reportHeading" class="note"></div>
+    <div id="reportList"></div>
+
+    <h2 style="margin-top:16px">Submit a new report</h2>
+    <form id="reportForm">
+      <input id="fAuthor" placeholder="Your name" required>
+      <input id="fTitle" placeholder="Title" required>
+      <textarea id="fBody" rows="3" placeholder="What happened?" required></textarea>
+      <div><button type="submit">Submit report</button> <span id="formMsg"></span></div>
+    </form>
+  </section>
+</main>
+<footer>ADBMS project · MongoDB time-series, indexing, aggregation, CRUD and text search</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => (n == null || Number.isNaN(Number(n)) ? "–" : Number(n).toLocaleString());
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+Chart.defaults.color = css("--muted");
+Chart.defaults.borderColor = css("--border");
+Chart.defaults.font.family = "system-ui, sans-serif";
+
+const COLORS = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6"];
+const charts = {};
+let countries = [];
+let vaccination = [];
+
+function draw(id, config) {
+  if (charts[id]) charts[id].destroy();
+  config.options = Object.assign({ responsive: true, maintainAspectRatio: false }, config.options || {});
+  charts[id] = new Chart($(id), config);
+}
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(res.status + " " + path + ": " + text.slice(0, 160));
+  }
+  return res.json();
+}
+
+function showError(message) {
+  const box = $("error");
+  box.hidden = false;
+  box.textContent += (box.textContent ? "\n" : "") + message;
+}
+
+function currentIso() { return $("country").value; }
+function currentName() {
+  const c = countries.find((x) => x.iso_code === currentIso());
+  return c ? c.location : currentIso();
+}
+
+/* ---------- global charts (do not depend on the selected country) ---------- */
+function loadGlobal() {
+  api("/analytics/top-countries?limit=10").then((rows) => {
+    draw("chTop", {
+      type: "bar",
+      data: {
+        labels: rows.map((r) => r.country),
+        datasets: [{ label: "Cases per million", data: rows.map((r) => r.cases_per_million), backgroundColor: COLORS[0] }],
+      },
+      options: { indexAxis: "y", plugins: { legend: { display: false } } },
+    });
+  }).catch((e) => showError(e.message));
+
+  api("/analytics/continent-fatality").then((rows) => {
+    draw("chContinent", {
+      type: "bar",
+      data: {
+        labels: rows.map((r) => r.continent),
+        datasets: [{ label: "Fatality rate (%)", data: rows.map((r) => r.fatality_rate_pct), backgroundColor: COLORS[1] }],
+      },
+      options: { plugins: { legend: { display: false } } },
+    });
+  }).catch((e) => showError(e.message));
+
+  api("/analytics/vaccination-vs-deaths").then((rows) => {
+    vaccination = rows;
+    updateVaccKpi();
+    const byContinent = {};
+    rows.forEach((r) => {
+      const key = r.continent || "Other";
+      (byContinent[key] = byContinent[key] || []).push({ x: r.fully_vaccinated_pct, y: r.deaths_per_million, country: r.country });
+    });
+    draw("chVax", {
+      type: "scatter",
+      data: {
+        datasets: Object.keys(byContinent).map((name, i) => ({
+          label: name, data: byContinent[name], backgroundColor: COLORS[i % COLORS.length], pointRadius: 4,
+        })),
+      },
+      options: {
+        scales: {
+          x: { title: { display: true, text: "Fully vaccinated (% of population)" } },
+          y: { title: { display: true, text: "Deaths per million" } },
+        },
+        plugins: {
+          tooltip: {
+            callbacks: {
+              label: (ctx) => ctx.raw.country + ": " + ctx.raw.x + "% vaccinated, " + fmt(ctx.raw.y) + " deaths/million",
+            },
+          },
+        },
+      },
+    });
+  }).catch((e) => showError(e.message));
+
+  api("/analytics/peak-waves?limit=10").then((rows) => {
+    const body = $("peakBody");
+    body.replaceChildren();
+    rows.forEach((r) => {
+      const tr = document.createElement("tr");
+      [r.country, r.peak_date, fmt(r.peak_new_cases), fmt(r.peak_per_million)].forEach((text) => {
+        const td = document.createElement("td");
+        td.textContent = text;
+        tr.append(td);
+      });
+      body.append(tr);
+    });
+  }).catch((e) => showError(e.message));
+}
+
+/* ---------- country-specific charts ---------- */
+function updateVaccKpi() {
+  const row = vaccination.find((r) => r.iso_code === currentIso());
+  $("kVax").textContent = row ? row.fully_vaccinated_pct + "%" : "–";
+}
+
+function loadCountry() {
+  const iso = currentIso();
+  document.querySelectorAll(".cname").forEach((el) => { el.textContent = currentName(); });
+  const country = countries.find((c) => c.iso_code === iso);
+  $("kPop").textContent = fmt(country && country.demographics && country.demographics.population);
+  updateVaccKpi();
+
+  api("/analytics/monthly-trend/" + iso).then((months) => {
+    const cases = months.reduce((s, m) => s + (m.new_cases || 0), 0);
+    const deaths = months.reduce((s, m) => s + (m.new_deaths || 0), 0);
+    $("kCases").textContent = fmt(cases);
+    $("kDeaths").textContent = fmt(deaths);
+    $("kCfr").textContent = cases > 0 ? (deaths / cases * 100).toFixed(2) + "%" : "–";
+    draw("chMonthly", {
+      type: "bar",
+      data: {
+        labels: months.map((m) => m.month),
+        datasets: [
+          { type: "bar", label: "New cases", data: months.map((m) => m.new_cases), backgroundColor: COLORS[0], yAxisID: "y" },
+          { type: "line", label: "New deaths", data: months.map((m) => m.new_deaths), borderColor: COLORS[1], pointRadius: 0, yAxisID: "y1" },
+        ],
+      },
+      options: {
+        scales: {
+          x: { ticks: { maxTicksLimit: 12 } },
+          y: { position: "left", title: { display: true, text: "Cases" } },
+          y1: { position: "right", grid: { drawOnChartArea: false }, title: { display: true, text: "Deaths" } },
+        },
+      },
+    });
+  }).catch((e) => showError(e.message));
+
+  api("/analytics/moving-average/" + iso).then((days) => {
+    draw("chDaily", {
+      type: "line",
+      data: {
+        labels: days.map((d) => d.date),
+        datasets: [
+          { label: "New cases (daily)", data: days.map((d) => d.new_cases), borderColor: "rgba(59,130,246,0.35)", pointRadius: 0, borderWidth: 1 },
+          { label: "7-day average", data: days.map((d) => d.avg_7day), borderColor: COLORS[1], pointRadius: 0, borderWidth: 2 },
+        ],
+      },
+      options: { scales: { x: { ticks: { maxTicksLimit: 10 } } } },
+    });
+  }).catch((e) => showError(e.message));
+
+  refreshReports();
+}
+
+/* ---------- reports (CRUD + search) ---------- */
+function renderReports(list) {
+  const box = $("reportList");
+  box.replaceChildren();
+  if (!list.length) { box.textContent = "No reports found."; return; }
+  list.forEach((r) => {
+    const div = document.createElement("div");
+    div.className = "report";
+    const title = document.createElement("strong");
+    title.textContent = r.title;
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = "  " + r.iso_code + " · " + r.author + " · " + r.status;
+    const body = document.createElement("p");
+    body.textContent = r.body;
+    const del = document.createElement("button");
+    del.textContent = "Delete";
+    del.onclick = async () => {
+      try { await api("/reports/" + r.id, { method: "DELETE" }); refreshReports(); }
+      catch (e) { showError(e.message); }
+    };
+    div.append(title, meta, body, del);
+    box.append(div);
+  });
+}
+
+function refreshReports() {
+  $("reportHeading").textContent = "Latest reports for " + currentName();
+  api("/reports?iso_code=" + currentIso() + "&limit=10").then(renderReports).catch((e) => showError(e.message));
+}
+
+$("searchBtn").onclick = () => {
+  const q = $("searchQ").value.trim();
+  if (q.length < 2) return;
+  $("reportHeading").textContent = "Search results for “" + q + "”";
+  api("/reports/search?q=" + encodeURIComponent(q)).then(renderReports).catch((e) => showError(e.message));
+};
+$("clearBtn").onclick = () => { $("searchQ").value = ""; refreshReports(); };
+
+$("reportForm").onsubmit = async (event) => {
+  event.preventDefault();
+  const payload = {
+    iso_code: currentIso(),
+    author: $("fAuthor").value.trim(),
+    title: $("fTitle").value.trim(),
+    body: $("fBody").value.trim(),
+  };
+  try {
+    await api("/reports", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    $("formMsg").textContent = "Report submitted.";
+    $("fTitle").value = ""; $("fBody").value = "";
+    refreshReports();
+  } catch (e) {
+    $("formMsg").textContent = "Could not submit: " + e.message;
+  }
+};
+
+/* ---------- start ---------- */
+(async function init() {
+  try {
+    countries = await api("/countries");
+  } catch (e) {
+    showError("Could not load countries: " + e.message);
+    return;
+  }
+  const select = $("country");
+  countries.forEach((c) => {
+    const option = document.createElement("option");
+    option.value = c.iso_code;
+    option.textContent = c.location;
+    select.append(option);
+  });
+  select.value = countries.some((c) => c.iso_code === "PAK") ? "PAK" : countries[0].iso_code;
+  select.addEventListener("change", loadCountry);
+  loadGlobal();
+  loadCountry();
+})();
+</script>
+</body>
+</html>
